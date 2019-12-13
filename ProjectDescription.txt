@@ -1,0 +1,6 @@
+Application Of Common Machine Learning Methods
+By Amy Hoffman
+
+The document provides example applications of regression, classification, clustering, and neural networks using data sets found on Kaggle. Therefore, prior to performing the analysis, I cleaned the data and performed some exploratory data analysis to formulate questions and determine which machine learning method was applicable.
+
+The analysis was performed in R and written up in R Markdown as part of a undergraduate assignment for an Advanced Machine Learning class.
