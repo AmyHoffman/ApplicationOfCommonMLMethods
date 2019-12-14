@@ -1,0 +1,562 @@
+---
+title: "Application of Common Machine Learning Methods"
+author: "Amy Telck"
+date: "May 10, 2018"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(png)
+library(corrplot)
+library(caret)
+library(glmnet)
+library(MASS)
+library(leaps)
+library(tidyverse)
+library(neuralnet) 
+library(nnet)
+
+k <- 10
+control <- trainControl("cv", k)
+```
+
+###Regression
+
+The follwing data used for the regression analysis was consolidated by P.Cortex and A. Morais in 2007 of forest fires from Montesinho natural park in Portugal with the goal of predicting wildfires using meterological data. 
+
+The following table shows the variable names of the data and a brief explanation for each. Note that the FWI System is the Canadian Forest Fire Weather Index. More information regarding the database and the following variables can be found [here](https://www.frames.gov/files/6014/1576/1411/FWI-history.pdf).
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+fires <- read.csv("forestfires.csv")
+
+#regression data dictionary
+knitr::kable(cbind(names(fires), c("X-axis spatial coordinate on map (1:9)",
+                                   "y-axis spatial coordinate on map (1:9)",
+                                  "Month of the year", 
+                                  "Day of the week", 
+                                  "Fine Fuel Moisture Code index from FWI System", 
+                                  "duff Moisture Code index from FWI system", 
+                                  "Drought Code index from FWI system",
+                                  "Initial Spread Index index from FWI system",
+                                  "Temperature in Celsius",
+                                  "Relative Humidity in %",
+                                  "Wind Speed in km/h",
+                                  "Rain in mm/m^2",
+                                  "Burned Area of the forest in hectares")), 
+             col.names = c("Variable", "Description"))
+
+```
+
+The map below shows the numeric values P.Cortex and A. Morais used to disguish the x and y spatial coordinates of the fires within the natural park.
+
+```{r echo=FALSE, fig.height=12, fig.width=16, message=FALSE, warning=FALSE, paged.print=FALSE, out.width='100%', fig.cap='Map of Montesinho natural park used by the creators of the data set to provide spacial coordinates(x,y) for each fire.'}
+knitr::include_graphics("The-map-of-montesinho-natural-park.png", dpi = 10)
+```
+
+Knowing this information, I pose a question like that of P.Cortex and A. Morais:
+
+###can meterlogical data be used to predict the burn area of a wild fire?  
+
+This is an important research question, as if the burn area could be predicted, the first responders would be more aware of the potential risk toward the environment and surrounding areas. Further, given more research and data, the capability of predicting the burn area of wild fires could help to evaluate the potential cost and risk of wild fires throughout the globe. 
+
+From the summary statsitcs below, notice how the data is in most cases extremely spread out. This signals a great variance in the data and the possibility of outliers in the dataset. 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+m1 <- fires[,5:13] %>% 
+  summarise_all(mean)
+m2 <- fires[,5:13] %>% 
+  summarise_all(max)
+m3 <- fires[,5:13] %>% 
+  summarise_all(min)
+Stat <- c("Mean", "Max-Min")
+
+knitr::kable(cbind(Stat,rbind(m1, m2)))
+```
+
+The documentation of the dataset warns of colinearity between some variables. The plot below shows the Pearson's Correlations Coefficients for each pairwise comparison between the variables of the data set. Notice how the high correlations between:
+
+* DC index and Month
+* DC index and DMC indes
+* ISI index and FFMC index, and
+* RH and temp
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+fires$month <- match(fires$month, tolower(month.abb))
+
+fires$day <- as.numeric(fires$day, levels = c("mon", "tue", "wed", 
+                          "thu", "fri", "sat", "sun"),
+            ordered = TRUE)
+ 
+  
+cor_results <- cor(fires[,1:12])
+
+corrplot(cor_results, method = "number", type= 'lower', tl.pos = "ld", cl.pos = "n")
+```
+
+Given the suspicision of outliers and colinearity, ridge regression would perform better on the data than normal linear regression selection methods. Ridge regression is less sensitive to outliers and colinearity than normal regression. Thus, models created using the predictors found through ridge regression will typically have a larger error rate, than those found through linear regression selection methods.
+
+Cross validation was used to determine which value of $\lambda$ from 1 to 10 yielded a model with the lowest error rate. The ridge regression model has the lowest error rate when $\lambda = 2$. The coefficients in ridge regression will never equal zero, but only approach zero, so the cut-off value of the coefficients was set at $0.005$. Ridge regression showed the best predictors to be:
+
+* X
+* Y
+* month
+* day
+* FFMC
+* DMC
+* temp
+* RH
+* rain
+
+```{r eval=FALSE, message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+fires <- as.data.frame(fires %>% 
+  lapply(function(x) (x -mean(x))/sd(x)))
+
+X <- as.matrix(fires[,1:12])
+Y <- as.matrix(fires[,13])
+grid <- seq(from = 0, to = 10, by = 1)
+
+# why does Coef() of these yeild different ceofficient values?
+Ridge <- cv.glmnet(X, Y, alpha = 0, lambda = grid)
+# best lambda = 2
+Ridge <- glmnet(X,Y, alpha = 0, lambda = 2)
+```
+
+The creation of a 10-fold cross-validated linear model using these predictors yields a low R-Squared value and a high Mean Squared Error, as seen in the table below.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+fireLM <- train(area ~ X + Y + month + day + FFMC + DMC + temp + RH + rain, data = fires, method = "lm", trControl = control)
+
+predicted <- predict.train(fireLM, fires)
+MSE <- fires %>% mutate(predicted = predicted) %>% 
+  summarise(sum((area - predicted)^2)/n())
+
+knitr::kable(cbind(fireLM$results[c(3,6)], MSE), col.names = c("Rsquared", "Adj Rsquared", "MSE"))
+```
+
+These values signify that the area of a wild fire cannot accurately be predicted using the predictors selected. The question then becomes whether the area cannot be predicted using the chosen predictors or whether the area cannot be predicted using any combination of predictors in the dataset. 
+
+The R-Squared value is always largest when a model using all the available predictors. To test the hypothesis that the area cannot be predicted using the variables contained in this data set in a linear model, I created a linear model using all predictors. This model yielded the R-squared and Mean Squared Error shown below. 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+fireLM <- train(area ~ ., data = fires, method = "lm", trControl = control)
+
+predicted <- predict.train(fireLM, fires)
+MSE <- fires %>% mutate(predicted = predicted) %>% 
+  summarise(sum((area - predicted)^2)/n())
+
+knitr::kable(cbind(fireLM$results[c(3,6)], MSE), col.names = c("Rsquared", "Adj Rsquared", "MSE"))
+```
+
+The R-Squared values are larger for this model, as expected. But, notice the small increase in R-Squared values and decrease in MSE. The change in these values signify this model is barely better than that created using ridge regression. 
+
+Therefore, the area of wild fire cannot be predicted using the variables of this data with a linear model. However, it is important to note that though a linear approach failed to create a good model, it is possible the data from this dataset is of a non-linear shape. Meaning, a non-linear regression model may yield a more accurate predictive model.
+
+
+###Classification
+
+The following data used for classification was submitted on behalf of the Center for Clinical and Translational Research of Virginia Commonwealth University with the purpose of analyzing factors that could relate to the readmission of diabetic individuals to hostipals. The data set contains 101,766 observations with 50 variables. 
+
+The original compilers and researchers, Strack et.al, of this data provide a detailed description of the all the variables [here](https://www.hindawi.com/journals/bmri/2014/781670/tab1/). Within this description, Strack et. al provides the name, description, variable type, and the percentage of entried missing for each feature. Strack et. al asserts only the variables $\texttt{Race}$, $\texttt{Weight}$, $\texttt{Medical specialty}$, $\texttt{Payer code}$ and $\texttt{Diagnosis 3}$ had missing values. In fact, $97\%$ of the entries for $\texttt{Weight}$ are missing. Therefore, $\texttt{Weight}$ was removed from the set of predictors used for classification. 
+
+The summary statistics below show a few noticeable differences in the mean values of the six variables in relation to the factors of the $\texttt{readmitted}$ variable. The mean values of $\texttt{num_lab_procedures}$, $\texttt{num_procedures}$, and $\texttt{num_medications}$ have slight differences in the mean. There is a distinct difference in the means of $\texttt{num_outpatient}$, $\texttt{num_emergency}$, and $\texttt{num_inpatient}$. At first glance, the differences provide hope for a good predictive model. But, upon further thought, these three predictors are likely colinear. 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+diabetes <- read.csv("diabetic_data.csv")
+
+diabetes <- diabetes %>% 
+  select(- c(19:21,29:47)) %>% 
+  select(-weight, -payer_code, -medical_specialty, -encounter_id, -patient_nbr)
+
+diabetes[diabetes == "?"] <- NA
+diabetes <- na.omit(diabetes)
+
+summ <- diabetes %>% 
+  select(c(23, 8:13)) %>% 
+  group_by(readmitted) %>% 
+  summarise_all(mean)
+
+knitr::kable(summ, col.names = c("Readmittance", "Lab Procedures", "Procedures", "Medications", "Outpatient", "Emergency Room", "Inpatient"))
+```
+
+Nonetheless, the differences spark an interest is whether the predictors of this data set could be used to predict whether a patient will be readmitted to the hospital. Therefore, the question sought to answer is:
+
+###can it be predicted whether a diabetic patient will be readmitted to the hospital based off of their care in previous visits, and what predictor is most influential?
+
+The summary statistics above show the possible correlation between quantitative variables and the response variable, but it is possible for qualitative variables to play an important predictive role in predicting whether a patient will be readmitted. The bar graph below shows that the percentage of individuals who are readmitted in each category are approximately the same for each gender. Hence, the idea that gender may play an important role in predicting readmittance may not be statistically founded. 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+ggplot(data = diabetes) +
+  geom_bar(aes(readmitted, fill = gender), position = "fill") + 
+  labs(title = "Readmitted Individuals by Gender", x = "Readmitted", y = "Count", fill = "Gender")
+```
+
+Creating a LDA model using only age as a predictor yieled the confuion matrix below. Predicting whether a patient will be readmitted by $texttt{gender}$ is slightly better than just guessing.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+diabetesClass <- lda(as.factor(readmitted) ~ gender , data = diabetes)
+predictions <- predict(diabetesClass, diabetes)
+Test <- diabetes %>%
+  select(gender, readmitted) %>% 
+  mutate(predicted = predictions$class) %>% 
+  summarize(ErrorGreaterThan30 = sum(readmitted != predicted & readmitted == ">30")/n(),
+            ErrorLessThan30 = sum(readmitted != predicted & readmitted == "<30")/n(),
+            ErrorNotReadmitted = sum(readmitted != predicted & readmitted == "NO")/n())
+knitr::kable(Test)
+# 0.466 error rate
+```
+
+The package $\texttt{leaps}$ provides an algorithm for classification problems similar to that of the $\texttt{olsrr}$ forward and backward selection algorithms. The forward and backward predictor selection suggested the the best single predictor is $\texttt{number_inpatient}$, which makes sense. A patient is likely to be hospitalized again if they have been in inpatient care more often. An LDA model using only $\texttt{number_inpatient}$ as a predictor yields the error rates seen below. Notice this model has a slightly lower error rate, but now misclassifies in every category. 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+diabetesClass <- lda(as.factor(readmitted) ~ number_inpatient, data = diabetes)
+predictions <- predict(diabetesClass, diabetes)
+Test <- diabetes %>%
+  select(gender, readmitted) %>% 
+  mutate(predicted = predictions$class) %>% 
+  summarize(ErrorGreaterThan30 = sum(readmitted != predicted & readmitted == ">30")/n(),
+            ErrorLessThan30 = sum(readmitted != predicted & readmitted == "<30")/n(),
+            ErrorNotReadmitted = sum(readmitted != predicted & readmitted == "NO")/n())
+knitr::kable(Test)
+```
+
+Adding the next two most influential predictors, $\texttt{number_diagnosis}$ and $\texttt{change}$, yielded slightly better error rates. But like the prior models, the error rates still suggest the model is slightly better than guessing. 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+diabetesClass <- lda(as.factor(readmitted) ~ number_inpatient + number_diagnoses + change, data = diabetes)
+predictions <- predict(diabetesClass, diabetes)
+Test <- diabetes %>%
+  select(gender, readmitted) %>% 
+  mutate(predicted = predictions$class) %>% 
+  summarize(ErrorGreaterThan30 = sum(readmitted != predicted & readmitted == ">30")/n(),
+            ErrorLessThan30 = sum(readmitted != predicted & readmitted == "<30")/n(),
+            ErrorNotReadmitted = sum(readmitted != predicted & readmitted == "NO")/n())
+knitr::kable(Test)
+```
+
+It is important to note, that while the error rates of misclassifing a person who will not be readmitted is lower, that is not necessarily the main concern. In this scenario it is more important to correctly classify individuals who will be readmitted, rather than those who will not. Correctly identifying individuals who will likely be readmitted can save lives; whereas, misclassifying these individuals could negatively impact their medical care.
+
+Futher, identifying what characteristics or data helps to identify what patients will be readmitted provides further information to medical professionals. If medical professionals are aware of these factors, they can be sure watch for the signs and adjust the care-plan accordingly.
+
+```{r eval=FALSE, message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+# diabetes <- diabetes %>% mutate(readmitted, ifelse(">30", "high", ifelse("<30", "medium", "low")))
+# 
+# diabetesfactors <-  regsubsets(x= as.factor(gender) ~. , data = diabetes, method = "forward")
+# summary(diabetesfactors, all.best=TRUE)
+# 
+# diabetesClass <- lda(as.factor(readmitted) ~ ., data = diabetes)
+# predictions <- predict(diabetesClass, diabetes)
+# Test <- diabetes %>%
+#   select(readmitted) %>% 
+#   mutate(predicted = predictions$class) %>% 
+#  summarize(ErrorGreaterThan30 = sum(readmitted != predicted & readmitted == ">30")/n(),
+#             ErrorLessThan30 = sum(readmitted != predicted & readmitted == "<30")/n(),
+#             ErrorNotReadmitted = sum(readmitted != predicted & readmitted == "NO")/n())
+
+# diabetesClass <- lda(readmitted ~ num_lab_procedures + num_procedures + num_medications + number_outpatient + number_emergency + number_inpatient + number_diagnoses, data = diabetes)
+# predictions <- predict(diabetesClass, diabetes)
+# Test <- diabetes %>%
+#   select(gender, readmitted) %>% 
+#   mutate(predicted = predictions$class) %>% 
+#   summarize(ErrorGreaterThan30 = sum(readmitted != predicted & readmitted == ">30")/n(),
+#             ErrorLessThan30 = sum(readmitted != predicted & readmitted == "<30")/n(),
+#             ErrorNotReadmitted = sum(readmitted != predicted & readmitted == "NO")/n())
+
+```
+
+
+###Clustering
+
+The same data was used for clustering as the classification problem. 
+
+```{r message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+diabetes <- read.csv("diabetic_data.csv")
+
+diabetes <- diabetes %>% 
+  select(-weight, -payer_code, -medical_specialty, -encounter_id, -patient_nbr)
+
+diabetes[diabetes == "?"] <- NA
+diabetes <- na.omit(diabetes)
+```
+
+From the descriptive statistics below, we can see there exists a noticable difference between all the variables below when grouped by gender. This signals that gender may play and important role as a predictor of many of the variables contained in this data set despite its low significance in predicting patients who will be readmitted.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+summ <- diabetes %>% 
+  select(c(2,4:13)) %>% 
+  group_by(gender) %>% 
+  summarise_all(mean)
+
+knitr::kable(summ[1:2,], col.names = c("Gender", "Admission Type", "Discharge Disposition", 
+                                       "Admission Source", "Time in Hospital", "Lab Procedures", 
+                                       "Procedures", "Medications", "Outpatient", "Emergency", 
+                                       "Inpatient"))
+# summ[1:2,]
+# names(diabetes)
+```
+
+Therefore, this problem seeks to answer the question:
+
+###Can the data be clustered into two groups to symbolize gender? If so, what benefit does the clustering provide?
+
+However, with just under 100,000 observations, clustering with all the data would require an extensive length of time. Therefore, the data was subsetted in a manner such that there was an equal number of female and male individuals. The smaller subset of data was then used to perform complete heirarchical clustering. The subsets were created using randomization, so cross validation was used to find the smallest error rate. The heirarchical clustering algorthim was run ten times with ten different random subsets of training data. 
+
+The choice of predictors was based on the differences in means identified in the summary statistics above. Some of the combinations of predictors with the smallest error rate are shown below. Notice how the error rates are very similar, but the single predictor $\texttt{number inpatient}$ has the lowest error rate.  
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+predictors <- c("discharge_disposition_id", 
+                "time_in_hospital",
+                "num_procedures",
+                "num_medications",
+                "number_outpatient", 
+                "number_emergency",
+                "number_inpatient", 
+                "time_in_hospital, number_inpatient",
+                "num_procedures, number_inpatient",
+                "num_procedures, num_medications, number_inpatient",
+                "num_procedures, number_outpatient, number_inpatient")
+
+errorRates <- c(0.456, 0.470, 0.447, 0.448, 0.448, 0.450, 0.445, 0.461, 0.452, 0.460, 0.451)
+
+knitr::kable(cbind(predictors, errorRates))
+```
+
+The dendrogram belows shows the complete heirarchical clusterings of the data when using only $\texttt{number inpatient}$ as a predictor. As seen below, the heirarchical clustering into two groups is very unbalanced. However, single, average, and centroid methods were also unbalanced and had error rates of approximately 0.01 or higher than the error rates of the complete method seen above. 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+FinalError <- 1
+
+for(i in 1:10){
+
+  DataSet1 <- diabetes %>%
+    filter(gender == "Female") 
+  DataSet1 <- DataSet1 %>% 
+    mutate(prob = runif(nrow(DataSet1))) %>%
+    mutate(TestTrain = ifelse(prob<0.05,"Train","Test"))
+  DataSet2 <- diabetes %>%
+    filter(gender == "Male")
+  DataSet2 <- DataSet2 %>% 
+    mutate(prob = runif(nrow(DataSet2))) %>%
+    mutate(TestTrain = ifelse(prob<0.05,"Train","Test"))
+  Train <- rbind(DataSet1, DataSet2)
+  Train <- Train %>%
+    filter(TestTrain == "Train") %>%
+    dplyr::select(-prob,-TestTrain) 
+  
+  nic.data=Train[,c(13)]
+  
+  HClusterModel_complete <- hclust( dist(nic.data), method="complete")
+  # plot(HClusterModel_complete)
+  
+  ClusterMemberships <- cutree(HClusterModel_complete, k=2)
+  Error <- Train %>%
+    mutate(PredictedCluster = as.factor(ClusterMemberships)) %>% 
+    summarise(Error = sum(as.numeric(gender) != PredictedCluster)/n())
+
+  if(Error < FinalError){
+    FinalError <- Error
+    BestModel <- HClusterModel_complete
+  }
+}
+
+plot(BestModel)
+rect.hclust(HClusterModel_complete, k=2, border = 2:12) 
+# FinalError
+
+```
+
+These error rates indicate the clustering algorithm is misclassifying about half of the entries, and the dendrogram shows the clustering predicts almost all observations to be of the same gender. The confusion matrix below confirms these suspicions, as it appears the clustering algorithm is predicting the majority of observations to be women. The error rates are very concerning and indicate that guessing would be a better method of predicting gender.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+Error <- Train %>%
+    mutate(PredictedCluster = as.factor(ClusterMemberships))  %>% 
+    summarise(CorrectMen = sum(as.numeric(gender) == PredictedCluster & as.numeric(gender) == 2)/n(),
+              CorrectWomen = sum(as.numeric(gender) == PredictedCluster & as.numeric(gender)  == 1)/n(),
+              IncorrectMen = sum(as.numeric(gender) != PredictedCluster & as.numeric(gender)  == 2)/n(),
+              IncorrectWomen = sum(as.numeric(gender) == PredictedCluster & as.numeric(gender)  == 1)/n())
+
+knitr::kable(Error)
+```
+
+To futher investigate whether gender can be clustered more accurately, K-Means clustering was applied. The plot belows shows the cluster and predictions made by K-Means clustering using 20 random starting classifications. Like the heirarchical clustering, the data was subsetted then run several times to find the most accurate error rate. As seen below, the K-Means Clustering Error rate is comparable with the error rates of complete heirarchical clustering, though higher than the clustering shown above.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+DataSet1 <- diabetes %>%
+    filter(gender == "Female") 
+  DataSet1 <- DataSet1 %>% 
+    mutate(prob = runif(nrow(DataSet1))) %>%
+    mutate(TestTrain = ifelse(prob<0.2,"Train","Test"))
+  DataSet2 <- diabetes %>%
+    filter(gender == "Male")
+  DataSet2 <- DataSet2 %>% 
+    mutate(prob = runif(nrow(DataSet2))) %>%
+    mutate(TestTrain = ifelse(prob<0.2,"Train","Test"))
+  Train <- rbind(DataSet1, DataSet2)
+  Train <- Train %>%
+    filter(TestTrain == "Train") %>%
+    dplyr::select(-prob,-TestTrain) 
+
+KMeansModel <- kmeans(x=Train[,c("number_inpatient", "num_procedures")], 2, nstart=20)
+Train <- Train %>%
+  mutate(KMeansPredictedCluster = ifelse(KMeansModel$cluster == 1, "Class 1", "Class2"))
+
+# sum(as.numeric(Train$gender) == Train$KMeansPredictedCluster)
+# sum(as.numeric(Train$gender) != Train$KMeansPredictedCluster)
+
+# ggplot(data=Train) + 
+#   geom_point(aes(x=admission_source_id, y=time_in_hospital, color=gender), size=3, shape=18)
+
+# ggplot(data=Train) + 
+#   geom_point(aes(y=as.numeric(gender), x =number_inpatient, color=gender), size=1, shape=18) +
+#   geom_point(aes(x=as.numeric(KMeansPredictedCluster), y=number_inpatient, color=as.factor(KMeansPredictedCluster)), size=3, shape=1) + 
+#   labs(title="K Means and Actual Gender")
+
+knitr::kable(sum(as.numeric(Train$gender) != Train$KMeansPredictedCluster)/nrow(Train), col.names = ("Error of K Means Clustering"))
+
+```
+
+These error rates of approximately 100\% indicate that the data cannot be clustering into two groups to represent $\texttt{gender}$ with the predictors available. Remember back in the descriptive statistics that there appeared to be a signficant difference in means of the variable $\texttt{number_inpatient}$, but neither classification algorithm found a clear distinction between the genders given the variables. The misinterpretation of the possible correlation could be caused by the fact that the means are subject to outliers. Meaning, the spread of the values for each gender could be relatively similar, but if one gender has a few outliers, the averages will appear to be varried. 
+
+
+###Neural Networks
+
+The data set prepared by David W. Aha contains 958 possible end game board configurations of tic-tac-toe. It is assumed "X" always played first. The data set also containes a binary classification of each configuration of whether "X" won the game. 
+
+As seen in the table below, player "X" wins about twice as often as he or she loses. However, it is important to note the number of losses does not necessarily imply player "O" won, as losses includes instances where neither player won. This follows common suspicision that the first player has the advantage. 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+tictactoedata <- read.csv("tictactoe.txt",
+                          sep=',',
+                          header=FALSE,
+                          quote="",
+                          stringsAsFactors = TRUE)
+
+colnames(tictactoedata) <- c("TopLeft", "TopMiddle", "TopRight", "MiddleLeft", "MiddleMiddle", "MiddleRight", "BottomLeft", "BottomMiddle","BottomRight", "Class")
+
+Wins <- tictactoedata %>% 
+  summarise(Wins = sum(Class == "positive"),
+          Losses = sum(Class == "negative"))
+knitr::kable(Wins)
+```
+
+Variables include "X" for one player, "O" for the other player and "b" for spaces left blank due to the inability for either player to win. Further, the summary statistics below seek to shed some light on the popularity of each square. Notice in the instances where player "X" wins, the player claimed the popular favorite: the middle square. On the other hand, instances where player"X" loses, the player claimed the top/bottom middle squares or the left/right middle squares.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+Wins <- tictactoedata %>% 
+  group_by(Class) %>% 
+  summarise(TopLeft = sum(TopLeft == "x"),
+            TopMiddle = sum(TopMiddle == "x"),
+            TopRight = sum(TopRight == "x"),
+            MiddleLeft = sum(MiddleLeft == "x"),
+            MiddleMiddle = sum(MiddleMiddle == "x"),
+            MiddleRight = sum(MiddleRight == "x"),
+            BottomLeft = sum(BottomLeft == "x"),
+            BottomMiddle = sum(BottomMiddle == "x"),
+            BottomRight = sum(BottomRight == "x"))
+
+knitr::kable(Wins)
+```
+
+Furthermore, the squares that most often result in player "X" losing are those that are most often left blank, as seen in the table below. 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+Wins <- tictactoedata %>% 
+  group_by(Class) %>% 
+  summarise(TopLeft = sum(TopLeft == "b"),
+            TopMiddle = sum(TopMiddle == "b"),
+            TopRight = sum(TopRight == "b"),
+            MiddleLeft = sum(MiddleLeft == "b"),
+            MiddleMiddle = sum(MiddleMiddle == "b"),
+            MiddleRight = sum(MiddleRight == "b"),
+            BottomLeft = sum(BottomLeft == "b"),
+            BottomMiddle = sum(BottomMiddle == "b"),
+            BottomRight = sum(BottomRight == "b"))
+
+knitr::kable(Wins)
+```
+
+
+Naturally, the question becomes:
+
+### Can it be predicted whether the first player will win a game of tic-tac-toe, given some of the entries on the board?
+
+To complete this task, a neural network was built using only a subset of predictors, meaning several of the nine squares of the board were excluded. Four random numbers from one to nice were generated to represent the nine squares. The data was then subsetted to include those four squares. To find four predictors that serve as predictors, the random numbers were generated, the data subsetting, and the neural network trained 20 times. The four predictors and the confusion matrix to the most accurate model can be seen below. A neural network was created using one hidden layer. Neural networks with one hidden layer and two to four input nodes all result in comprable errors as those seen below. The confusion matrix below is for a neural network with three nodes in one hidden layer.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+errorRate <- 1
+
+for(i in 1:20){
+
+  DataSet <- cbind(tictactoedata[,sample.int(9,4)], tictactoedata[,10])
+  DataSet[,1:4] <- as.data.frame(DataSet[,1:4] %>% 
+    lapply(function(x) ifelse(x == "x", 1, ifelse(x == "0", 2, 3))))
+  
+  DataSet[,1:4] <- scale(DataSet[,1:4])
+  
+  # Build a training / testing split
+  DataSet <- DataSet %>% 
+    mutate(p = runif(nrow(DataSet))) %>%
+    mutate(TestTrain = ifelse(p<0.8, "Train", "Test")) %>%
+    select(-p)
+  
+  Train <- DataSet %>% 
+    filter(TestTrain=="Train") %>%
+    select(-TestTrain)
+  Test <- DataSet %>%
+    filter(TestTrain=="Test") %>%
+    select(-TestTrain)
+  
+  # build the training and testing sets for the NN
+  # splits classication into new columns
+  trainset <- cbind(Train[, 1:4], class.ind(Train[,5]))
+  testset <-  cbind(Test[, 1:4], class.ind(Test[,5]))
+  
+  HLayers <- c(3)
+  NN <- neuralnet( paste( 'negative + positive ~' , paste(names(trainset[,1:4]), collapse = " + ")), data=trainset, hidden=HLayers, threshold = 0.05)
+  
+  NetResult <- compute(NN, testset[,1:4])$net.result
+  NN_pred <- apply(NetResult, 1, function(x) which(x==max(x)))
+  
+  Test <- Test %>%
+    mutate(predicted = NN_pred) %>% 
+    mutate(Class = Test[,5]) %>%  
+    mutate(Class = ifelse(Class == "negative", 1, 2))
+  
+  tempError <- sum(Test$Class != Test$predicted)/nrow(Test)
+  
+  if(tempError < errorRate){
+    errorRate <- tempError
+    Names <- names(trainset[,1:4])
+    Error <- Test %>% 
+      summarize(Correct_Negative = sum(Class==predicted & Class==1) / n(), 
+                Correct_Positive = sum(Class==predicted & Class==2) / n(),
+                Incorrect_Negative = sum(Class!=predicted & Class==1) / n(), 
+                Incorrect_Positive = sum(Class!=predicted & Class==2) / n())
+    # print(tempError)
+  }
+}
+
+knitr::kable(Names, col.names = c("Best Predictors"))
+knitr::kable(Error)
+```
+
+Notice  the neural network can train and predict whether player "X" will win or lose the game fairly accurate. Yet again it is important to remember the network does not predict which player will win, but rather if player "X" will win. It is also important to notice that though the data was filtered into sets of four predcitors, meaning the neural network will be predicting the winner after each player goes twice. Though it is possible after four turns one player may have won or neither player can win. Therefore, it is important to subset the number of predictors to account for only the first few turns, not the final layout of the board.
+
+###Data Citations
+
+Aha David W. (1991). "Tic-Tac-Toe Endgame Data set." UCI Machine Learning Repository Irvine, CA: University of California, School of Information and Computer Science.
+Available at: https://archive.ics.uci.edu/ml/datasets/Tic-Tac-Toe+Endgame
+
+  Beata Strack, Jonathan P. DeShazo, Chris Gennings, Juan L. Olmo, Sebastian Ventura,
+  Krzysztof J. Cios, and John N. Clore, “Impact of HbA1c Measurement on Hospital  
+  Readmission Rates: Analysis of 70,000 Clinical Database Patient Records,” BioMed
+  Research International, vol. 2014, Article ID 781670, 11 pages, 2014. 
+
+  P. Cortez and A. Morais. A Data Mining Approach to Predict Forest Fires using Meteorological Data. 
+  In J. Neves, M. F. Santos and J. Machado Eds., New Trends in Artificial Intelligence, 
+  Proceedings of the 13th EPIA 2007 - Portuguese Conference on Artificial Intelligence, December, 
+  Guimaraes, Portugal, pp. 512-523, 2007. APPIA, ISBN-13 978-989-95618-0-9. 
+  Available at: http://www.dsi.uminho.pt/~pcortez/fires.pdf
+  https://archive.ics.uci.edu/ml/datasets/Forest+Fires
